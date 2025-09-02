@@ -349,22 +349,11 @@ class PremiumMusicRequest:
                     # 음악 길이만큼 대기 (최소 3분, 최대 10분)
                     duration = max(min(music_info.get('duration', 180), 600), 180)
                     
-                    # duration 시간만큼 정확히 대기 후 탭 닫기
+                    # duration 시간만큼 정확히 대기
                     logger.info(f"음악 재생 시작: {duration}초 동안 재생됩니다.")
                     time.sleep(duration)
                     
-                    # 재생 완료 후 브라우저 탭 닫기 (Windows)
-                    import pyautogui
-                    import time as time_module
-                    
-                    try:
-                        # 브라우저 창 활성화 후 탭 닫기
-                        time_module.sleep(1)
-                        pyautogui.hotkey('ctrl', 'w')
-                        logger.info(f"음악 재생 완료 ({duration}초) - 브라우저 탭을 닫았습니다.")
-                        
-                    except Exception as e:
-                        logger.warning(f"브라우저 탭 닫기 실패: {e}")
+                    logger.info(f"음악 재생 완료 ({duration}초)")
                     
                     # 재생 완료로 상태 변경
                     self.current_playing = None
