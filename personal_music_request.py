@@ -222,19 +222,6 @@ class PremiumMusicRequest:
     
     def can_user_request(self, requester_name):
         """사용자가 요청할 수 있는지 확인"""
-        now = datetime.now()
-        
-        # 사용자별 요청 수 확인
-        user_requests = [r for r in self.requests if r['requester'] == requester_name]
-        if len(user_requests) >= self.max_requests_per_user:
-            return False, f"최대 요청 수({self.max_requests_per_user}개)를 초과했습니다."
-        
-        # 쿨다운 확인
-        recent_requests = [r for r in user_requests 
-                          if datetime.fromisoformat(r['requested_at']) > now - timedelta(seconds=self.request_cooldown)]
-        if recent_requests:
-            return False, "잠시 후 다시 시도해주세요. (5분 쿨다운)"
-        
         return True, "OK"
     
     def add_request(self, music_info, requester_name):
@@ -243,12 +230,6 @@ class PremiumMusicRequest:
         can_request, message = self.can_user_request(requester_name)
         if not can_request:
             return None, message
-        
-        # 중복 요청 확인
-        existing_request = next((r for r in self.requests 
-                               if r['music']['id'] == music_info['id'] and r['status'] == 'waiting'), None)
-        if existing_request:
-            return None, "이미 대기 중인 요청입니다."
         
         request_info = {
             'id': str(uuid.uuid4()),
@@ -363,19 +344,29 @@ class PremiumMusicRequest:
                     self.save_requests()
                     
                     # 브라우저에서 유튜브 재생
+                    webbrowser.open(music_info['url'])
+                    
+                    # 음악 길이만큼 대기 (최소 3분, 최대 10분)
+                    duration = max(min(music_info.get('duration', 180), 600), 180)
+                    
+                    # duration 시간만큼 정확히 대기 후 탭 닫기
+                    logger.info(f"음악 재생 시작: {duration}초 동안 재생됩니다.")
+                    time.sleep(duration)
+                    
+                    # 재생 완료 후 브라우저 탭 닫기 (Windows)
+                    import pyautogui
+                    import time as time_module
+                    
                     try:
-                        webbrowser.open(music_info['url'])
-                        
-                        # 음악 길이만큼 대기 (최소 3분, 최대 10분)
-                        duration = max(min(music_info.get('duration', 180), 600), 180)
-                        time.sleep(duration)
+                        # 브라우저 창 활성화 후 탭 닫기
+                        time_module.sleep(1)
+                        pyautogui.hotkey('ctrl', 'w')
+                        logger.info(f"음악 재생 완료 ({duration}초) - 브라우저 탭을 닫았습니다.")
                         
                     except Exception as e:
-                        logger.error(f"재생 오류: {e}")
-                        time.sleep(180)  # 3분 대기
+                        logger.warning(f"브라우저 탭 닫기 실패: {e}")
                     
                     # 재생 완료로 상태 변경
-                    current_request['status'] = 'completed'
                     self.current_playing = None
                     self.save_current_playing(None)
                     self.save_requests()
