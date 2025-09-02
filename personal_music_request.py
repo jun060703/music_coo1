@@ -12,6 +12,8 @@ import webbrowser
 from collections import defaultdict
 import hashlib
 import uuid
+import subprocess
+import platform
 
 # 로깅 설정
 logging.basicConfig(
@@ -334,11 +336,13 @@ class PremiumMusicRequest:
                     
                     # 상태를 재생 중으로 변경
                     current_request['status'] = 'playing'
+                    start_time = datetime.now()
                     self.current_playing = {
                         'request_id': current_request['id'],
                         'music': music_info,
                         'requester': current_request['requester'],
-                        'started_at': datetime.now().isoformat()
+                        'started_at': start_time.isoformat(),
+                        'duration': music_info.get('duration', 180)
                     }
                     self.save_current_playing(self.current_playing)
                     self.save_requests()
@@ -356,6 +360,7 @@ class PremiumMusicRequest:
                     logger.info(f"음악 재생 완료 ({duration}초)")
                     
                     # 재생 완료로 상태 변경
+                    current_request['status'] = 'completed'
                     self.current_playing = None
                     self.save_current_playing(None)
                     self.save_requests()
@@ -384,8 +389,104 @@ class PremiumMusicRequest:
         
         logger.info("🎵 자동 재생 루프 종료")
 
+class VolumeController:
+    """시스템 음량 조절 클래스"""
+    
+    def __init__(self):
+        self.system = platform.system()
+        self.current_volume = 50
+        logger.info(f"음량 조절기 초기화: {self.system}")
+    
+    def set_volume(self, volume_percent):
+        """시스템 음량 설정 (0-100)"""
+        try:
+            volume_percent = max(0, min(100, volume_percent))
+            self.current_volume = volume_percent
+            
+            if self.system == "Windows":
+                self._set_volume_windows(volume_percent)
+            elif self.system == "Darwin":  # macOS
+                self._set_volume_macos(volume_percent)
+            elif self.system == "Linux":
+                self._set_volume_linux(volume_percent)
+            else:
+                logger.warning(f"지원되지 않는 운영체제: {self.system}")
+                return False
+            
+            logger.info(f"음량 설정 완료: {volume_percent}%")
+            return True
+            
+        except Exception as e:
+            logger.error(f"음량 설정 오류: {e}")
+            return False
+    
+    def _set_volume_windows(self, volume_percent):
+        """Windows 음량 설정"""
+        try:
+            # 더 간단하고 안정적인 PowerShell 명령어 사용
+            command = f'powershell -command "Set-AudioDevice -Playback -Volume {volume_percent}"'
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                # 대체 방법: nircmd 사용 (설치되어 있는 경우)
+                try:
+                    command = f'nircmd.exe setsysvolume {int((volume_percent / 100) * 65535)}'
+                    subprocess.run(command, shell=True, check=True)
+                except:
+                    # 마지막 대안: 기본 Windows 명령어
+                    if volume_percent == 0:
+                        command = 'powershell -command "(New-Object -ComObject WScript.Shell).SendKeys([char]173)"'
+                    else:
+                        # 음량을 단계적으로 조절
+                        steps = int(volume_percent / 10)
+                        for _ in range(steps):
+                            subprocess.run('powershell -command "(New-Object -ComObject WScript.Shell).SendKeys([char]175)"', shell=True)
+                            time.sleep(0.1)
+            
+            logger.info(f"Windows 음량 설정 완료: {volume_percent}%")
+            
+        except Exception as e:
+            logger.error(f"Windows 음량 설정 오류: {e}")
+            # 사용자에게 알림
+            logger.warning("Windows 음량 조절을 위해 관리자 권한이 필요할 수 있습니다.")
+    
+    def _set_volume_macos(self, volume_percent):
+        """macOS 음량 설정"""
+        try:
+            command = f"osascript -e 'set volume output volume {volume_percent}'"
+            subprocess.run(command, shell=True, check=True)
+        except Exception as e:
+            logger.error(f"macOS 음량 설정 오류: {e}")
+    
+    def _set_volume_linux(self, volume_percent):
+        """Linux 음량 설정"""
+        try:
+            # amixer 사용 (ALSA)
+            command = f"amixer -D pulse sset Master {volume_percent}%"
+            subprocess.run(command, shell=True, check=True)
+        except Exception as e:
+            try:
+                # pactl 사용 (PulseAudio)
+                command = f"pactl set-sink-volume @DEFAULT_SINK@ {volume_percent}%"
+                subprocess.run(command, shell=True, check=True)
+            except Exception as e2:
+                logger.error(f"Linux 음량 설정 오류: {e}, {e2}")
+    
+    def get_volume(self):
+        """현재 음량 반환"""
+        return self.current_volume
+    
+    def mute(self):
+        """음소거"""
+        return self.set_volume(0)
+    
+    def unmute(self):
+        """음소거 해제 (이전 음량으로 복원)"""
+        return self.set_volume(self.current_volume)
+
 # 전역 인스턴스
 music_system = PremiumMusicRequest()
+volume_controller = VolumeController()
 
 @app.route('/')
 def index():
@@ -463,9 +564,22 @@ def stop_auto_play():
 def status():
     """현재 상태 확인"""
     try:
+        current_playing = music_system.current_playing
+        if current_playing and music_system.is_playing:
+            # 재생 시작 시간부터 현재까지의 경과 시간 계산
+            start_time = datetime.fromisoformat(current_playing['started_at'])
+            elapsed_seconds = int((datetime.now() - start_time).total_seconds())
+            duration = current_playing.get('duration', 180)
+            
+            # 진행률 계산
+            progress_percent = min((elapsed_seconds / duration) * 100, 100) if duration > 0 else 0
+            
+            current_playing['elapsed_seconds'] = elapsed_seconds
+            current_playing['progress_percent'] = progress_percent
+        
         return jsonify({
             'is_playing': music_system.is_playing,
-            'current_playing': music_system.current_playing,
+            'current_playing': current_playing,
             'request_count': len([r for r in music_system.requests if r['status'] == 'waiting']),
             'total_requests': len(music_system.requests),
             'completed_requests': len([r for r in music_system.requests if r['status'] == 'completed'])
@@ -491,6 +605,60 @@ def get_history():
     except Exception as e:
         logger.error(f"히스토리 조회 오류: {e}")
         return jsonify({'error': '히스토리 조회 중 오류가 발생했습니다.'})
+
+@app.route('/set_volume', methods=['POST'])
+def set_volume():
+    """음량 설정"""
+    try:
+        data = request.json
+        volume = data.get('volume', 50)
+        
+        success = volume_controller.set_volume(volume)
+        
+        if success:
+            return jsonify({'success': True, 'volume': volume})
+        else:
+            return jsonify({'success': False, 'error': '음량 설정에 실패했습니다.'})
+            
+    except Exception as e:
+        logger.error(f"음량 설정 오류: {e}")
+        return jsonify({'success': False, 'error': '음량 설정 중 오류가 발생했습니다.'})
+
+@app.route('/get_volume')
+def get_volume():
+    """현재 음량 조회"""
+    try:
+        volume = volume_controller.get_volume()
+        return jsonify({'success': True, 'volume': volume})
+    except Exception as e:
+        logger.error(f"음량 조회 오류: {e}")
+        return jsonify({'success': False, 'error': '음량 조회 중 오류가 발생했습니다.'})
+
+@app.route('/mute', methods=['POST'])
+def mute():
+    """음소거"""
+    try:
+        success = volume_controller.mute()
+        if success:
+            return jsonify({'success': True, 'volume': 0})
+        else:
+            return jsonify({'success': False, 'error': '음소거에 실패했습니다.'})
+    except Exception as e:
+        logger.error(f"음소거 오류: {e}")
+        return jsonify({'success': False, 'error': '음소거 중 오류가 발생했습니다.'})
+
+@app.route('/unmute', methods=['POST'])
+def unmute():
+    """음소거 해제"""
+    try:
+        success = volume_controller.unmute()
+        if success:
+            return jsonify({'success': True, 'volume': volume_controller.get_volume()})
+        else:
+            return jsonify({'success': False, 'error': '음소거 해제에 실패했습니다.'})
+    except Exception as e:
+        logger.error(f"음소거 해제 오류: {e}")
+        return jsonify({'success': False, 'error': '음소거 해제 중 오류가 발생했습니다.'})
 
 if __name__ == '__main__':
     # templates 폴더 생성
