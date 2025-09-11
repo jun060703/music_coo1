@@ -539,7 +539,7 @@ class PremiumMusicRequest:
                 logger.info(f"🎵 재생 시작: {music_info['title']} (요청자: {current_request['requester']})")
                 current_request['status'] = 'playing'
                 start_time = datetime.now()
-                duration = max(min(music_info.get('duration', 180), 600), 180)
+                duration = music_info.get('duration')
                 self.current_playing = {
                     'request_id': current_request['id'],
                     'music': music_info,
@@ -864,7 +864,7 @@ if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
     
     logger.info("🎵 Premium Music Request System 시작!")
-    logger.info("🌐 웹 브라우저에서 http://localhost:5000 으로 접속하세요")
+    logger.info("🌐 웹 브라우저에서 http://localhost:80 으로 접속하세요")
     logger.info("📱 상업용 고품질 음악 요청 시스템이 준비되었습니다!")
     
-    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=False, host='0.0.0.0', port=80, threaded=True)
