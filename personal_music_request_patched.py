@@ -640,28 +640,50 @@ class VolumeController:
     """시스템 음량 조절 (Windows: WASAPI/IAudioEndpointVolume 사용)"""
     def __init__(self):
         self.system = platform.system()
-        self.current_volume = 50  # 비-Windows 또는 실패 시 내부 상태용
+        self.current_volume = 50
         self._endpoint = None
 
         if self.system == "Windows" and PYCAW_AVAILABLE:
             try:
-                devices = AudioUtilities.GetSpeakers()  # 기본 재생 장치
+                devices = AudioUtilities.GetSpeakers()  # default render endpoint
                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 self._endpoint = cast(interface, POINTER(IAudioEndpointVolume))
             except Exception as e:
-                logger.warning(f"WASAPI 초기화 실패(내부 상태로 폴백): {e}")
+                logger.warning(f"WASAPI 초기화 실패: {e}")
+
+    def _run(self, cmd: list[str]) -> bool:
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as e:
+            logger.warning(f"시스템 볼륨 명령 실패: {cmd} / {e}")
+            return False
 
     def set_volume(self, volume_percent: int) -> bool:
-        """0~100 정수 볼륨. Windows에선 실제 시스템 마스터 볼륨을 조절."""
         v = max(0, min(100, int(volume_percent)))
-        if self._endpoint:  # Windows + WASAPI 성공
+        if self._endpoint:
             try:
                 self._endpoint.SetMasterVolumeLevelScalar(v / 100.0, None)
                 return True
             except Exception as e:
-                logger.warning(f"WASAPI 볼륨 설정 실패(폴백): {e}")
-        # 폴백(비-Windows 또는 실패)
-        self.current_volume = v
+                logger.warning(f"WASAPI 볼륨 설정 실패: {e}")
+
+        # macOS
+        if self.system == "Darwin":
+            return self._run(["osascript", "-e", f"set volume output volume {v}"])
+            # AppleScript 'set volume output volume N' 은 표준 명령입니다. :contentReference[oaicite:6]{index=6}
+
+        # Linux (PulseAudio / PipeWire 호환 pactl 우선)
+        if self.system == "Linux":
+            if shutil.which("pactl"):
+                # @DEFAULT_SINK@ 대상으로 볼륨 설정
+                return self._run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{v}%"])  # :contentReference[oaicite:7]{index=7}
+            if shutil.which("wpctl"):
+                # PipeWire: 0~1 스칼라
+                scalar = str(v / 100)
+                return self._run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", scalar])
+
+        self.current_volume = v  # 마지막 폴백(실제 디바이스 미제어)
         return False
 
     def get_volume(self) -> int:
@@ -680,6 +702,17 @@ class VolumeController:
                 return True
             except Exception as e:
                 logger.warning(f"WASAPI 음소거 실패: {e}")
+
+        if self.system == "Darwin":
+            # macOS: output muted 플래그
+            return self._run(["osascript", "-e", f"set volume {'with' if on else 'without'} output muted"])  # :contentReference[oaicite:8]{index=8}
+
+        if self.system == "Linux":
+            if shutil.which("pactl"):
+                return self._run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if on else "0"])  # :contentReference[oaicite:9]{index=9}
+            if shutil.which("wpctl"):
+                return self._run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1" if on else "0"])
+
         return False
 
 
@@ -835,26 +868,18 @@ def get_volume():
 
 @app.route('/mute', methods=['POST'])
 def mute():
-    """음소거"""
     try:
-        success = volume_controller.mute()
-        if success:
-            return jsonify({'success': True, 'volume': 0})
-        else:
-            return jsonify({'success': False, 'error': '음소거에 실패했습니다.'})
+        success = volume_controller.mute(True)
+        return jsonify({'success': bool(success), 'volume': 0} if success else {'success': False, 'error': '음소거에 실패했습니다.'})
     except Exception as e:
         logger.error(f"음소거 오류: {e}")
         return jsonify({'success': False, 'error': '음소거 중 오류가 발생했습니다.'})
 
 @app.route('/unmute', methods=['POST'])
 def unmute():
-    """음소거 해제"""
     try:
-        success = volume_controller.unmute()
-        if success:
-            return jsonify({'success': True, 'volume': volume_controller.get_volume()})
-        else:
-            return jsonify({'success': False, 'error': '음소거 해제에 실패했습니다.'})
+        success = volume_controller.mute(False)
+        return jsonify({'success': bool(success), 'volume': volume_controller.get_volume()} if success else {'success': False, 'error': '음소거 해제에 실패했습니다.'})
     except Exception as e:
         logger.error(f"음소거 해제 오류: {e}")
         return jsonify({'success': False, 'error': '음소거 해제 중 오류가 발생했습니다.'})
